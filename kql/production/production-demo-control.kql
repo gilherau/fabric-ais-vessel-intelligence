@@ -1,0 +1,199 @@
+// ============================================================
+// Microsoft Fabric AIS production demo control script
+//
+// Purpose:
+//   Provides operator-friendly demo blocks for validating the
+//   production Eventhouse tables, update policies, parser routing,
+//   dead-letter handling, and map rendering.
+//
+// Usage:
+//   Run this file one block at a time in a Fabric KQL database after
+//   deploying create-eventhouse-schema-and-policies.kql.
+//
+// Recommended flow:
+//   1. Run BLOCK 1 to reset the demo tables.
+//   2. Run BLOCK 2 to ingest the Staten Island Ferry sample track.
+//   3. Run BLOCK 3 to ingest AIS parser coverage records.
+//   4. Run BLOCK 4A and BLOCK 4B to validate routing and dead-letter behavior.
+//   5. Run BLOCK 5 to render only the ferry track on a map.
+//
+// Note:
+//   BLOCK 3 includes additional valid position messages spread across
+//   different locations. BLOCK 5 filters by MMSI and timestamp so the
+//   map remains focused on the Staten Island Ferry sample even after
+//   parser coverage data has been ingested.
+//
+// Safety:
+//   Historical public AIS sample data is for analytics demonstration
+//   only. Do not use this output for navigation, vessel operations,
+//   emergency response, or safety-of-life decisions.
+// ============================================================
+
+// ============================================================
+// BLOCK 1: Reset demo tables
+// ============================================================
+.execute database script <|
+// Clear bronze table
+.clear table AisRaw data;
+
+// Clear silver tables
+.clear table AisNormalized data ;
+.clear table AisDeadLetter data;
+
+// Clear gold tables
+.clear table AisPositionReports data;
+.clear table AisStaticReports data;
+.clear table AisInfrastructureReports data;
+.clear table AisBinaryMessages data;
+.clear table AisSafetyMessages data;
+.clear table AisControlMessages data;
+.clear table AisDecodedClassAPosition data;
+
+// ============================================================
+// BLOCK 2: Ingest Staten Island Ferry sample track
+// ============================================================
+//
+// Data source:
+//   Derived from NOAA's public AIS archive for 2024:
+//   https://coast.noaa.gov/htdata/CMSP/AISDataHandler/2024/
+//
+// Purpose:
+//   Demonstrates end-to-end production update-policy flow from
+//   AisRaw to AisDecodedClassAPosition.
+//
+.set-or-append AisRaw <|
+datatable (ReceivedTime:datetime, RawSentence:string)
+[
+    datetime(2024-07-25T01:05:15.000Z), "!AIVDM,1,1,,A,15MwrC0P1lre;OtGBHMaTW`N0000,0*4F",
+    datetime(2024-07-25T01:06:19.000Z), "!AIVDM,1,1,,B,15MwrC0P24re:9DGBDG9JWHV0000,0*20",
+    datetime(2024-07-25T01:07:22.000Z), "!AIVDM,1,1,,A,15MwrC0P29re8uHGB>Ha6W@d0000,0*07",
+    datetime(2024-07-25T01:08:32.000Z), "!AIVDM,1,1,,B,15MwrC0P2:re7mhGB8<`r7100000,0*42",
+    datetime(2024-07-25T01:09:33.000Z), "!AIVDM,1,1,,A,15MwrC0P28re6iDGB1n8eVg20000,0*4B",
+    datetime(2024-07-25T01:10:35.000Z), "!AIVDM,1,1,,B,15MwrC0P25re5rhGArd`?VM60000,0*17",
+    datetime(2024-07-25T01:11:42.000Z), "!AIVDM,1,1,,A,15MwrC0P27re57<GAj68?VUD0000,0*7F",
+    datetime(2024-07-25T01:12:53.000Z), "!AIVDM,1,1,,B,15MwrC0P2:re4:LGAaK8DVSb0000,0*20",
+    datetime(2024-07-25T01:13:55.000Z), "!AIVDM,1,1,,A,15MwrC0P2:re3EtGAQJ836=f0000,0*2F",
+    datetime(2024-07-25T01:15:02.000Z), "!AIVDM,1,1,,B,15MwrC0P24re2mpGAHD7iV>40000,0*7C",
+    datetime(2024-07-25T01:16:12.000Z), "!AIVDM,1,1,,A,15MwrC0P28re23LGA?G8:VLH0000,0*37",
+    datetime(2024-07-25T01:17:23.000Z), "!AIVDM,1,1,,B,15MwrC0P29re1;tGA6M8:VLf0000,0*2B",
+    datetime(2024-07-25T01:18:31.000Z), "!AIVDM,1,1,,A,15MwrC0P27re0M4G@uD836Lv0000,0*23",
+    datetime(2024-07-25T01:19:42.000Z), "!AIVDM,1,1,,B,15MwrC0P2:rdwT4G@lB`DVaD0000,0*3D",
+    datetime(2024-07-25T01:20:52.000Z), "!AIVDM,1,1,,A,15MwrC0P2:rdvLlG@dC8jW7`0000,0*73",
+    datetime(2024-07-25T01:22:02.000Z), "!AIVDM,1,1,,B,15MwrC0P2<rdtt4G@WIaTWP40000,0*79",
+    datetime(2024-07-25T01:23:04.000Z), "!AIVDM,1,1,,A,15MwrC0P1RrdsllG@SAa6Vv80000,0*15",
+    datetime(2024-07-25T01:24:08.000Z), "!AIVDM,1,1,,B,15MwrC0P0srds@lG@OQ`NVR@0000,0*33",
+    datetime(2024-07-25T01:25:13.000Z), "!AIVDM,1,1,,A,15MwrC0P0Crds1lG@MO8NVhJ0000,0*05",
+    datetime(2024-07-25T01:26:16.000Z), "!AIVDM,1,1,,B,15MwrC0P00rds38G@MVa46jP0000,0*61",
+    datetime(2024-07-25T02:34:19.000Z), "!AIVDM,1,1,,A,15MwrC0P0SrdsAhG@O<QhQJV0000,0*66",
+    datetime(2024-07-25T02:35:20.000Z), "!AIVDM,1,1,,B,15MwrC0P1srdso@G@RBR4WT`0000,0*50",
+    datetime(2024-07-25T02:36:21.000Z), "!AIVDM,1,1,,A,15MwrC0P2HrduVLG@V`2iRHb0000,0*58",
+    datetime(2024-07-25T02:37:22.000Z), "!AIVDM,1,1,,B,15MwrC0P2MrdvoLG@brR4W<d0000,0*08",
+    datetime(2024-07-25T02:38:26.000Z), "!AIVDM,1,1,,A,15MwrC0P2Ure0>@G@lhQLQ<l0000,0*68",
+    datetime(2024-07-25T02:39:28.000Z), "!AIVDM,1,1,,B,15MwrC0P2Rre138G@tfQ;6bp0000,0*5C",
+    datetime(2024-07-25T02:40:33.000Z), "!AIVDM,1,1,,A,15MwrC0P2Tre27HGA7R1=Q520000,0*4C",
+    datetime(2024-07-25T02:41:34.000Z), "!AIVDM,1,1,,B,15MwrC0P2Vre2vpGA?s1=VU40000,0*7C",
+    datetime(2024-07-25T02:42:39.000Z), "!AIVDM,1,1,,A,15MwrC0P2Vre3v4GAKQPt0i>0000,0*14",
+    datetime(2024-07-25T02:43:40.000Z), "!AIVDM,1,1,,B,15MwrC0P2Tre4bDGASrQ66W@0000,0*48",
+    datetime(2024-07-25T02:44:44.000Z), "!AIVDM,1,1,,A,15MwrC0P2Tre5fTGAgIQ8Q1H0000,0*56",
+    datetime(2024-07-25T02:45:45.000Z), "!AIVDM,1,1,,B,15MwrC0P2Wre6N0GAoi116WJ0000,0*5B",
+    datetime(2024-07-25T02:46:51.000Z), "!AIVDM,1,1,,A,15MwrC0P2cre7V<GB3SQ@1?V0000,0*7E",
+    datetime(2024-07-25T02:47:52.000Z), "!AIVDM,1,1,,B,15MwrC0P2fre8UtGB;J1QW7`0000,0*04",
+    datetime(2024-07-25T02:48:53.000Z), "!AIVDM,1,1,,A,15MwrC0P2bre:AhGBC=RF29b0000,0*1B",
+    datetime(2024-07-25T02:49:54.000Z), "!AIVDM,1,1,,B,15MwrC0P1qre;RtGBER35Wed0000,0*42",
+    datetime(2024-07-25T02:50:55.000Z), "!AIVDM,1,1,,A,15MwrC0P1Dre<UDGBJD1;0Ef0000,0*14",
+    datetime(2024-07-25T02:51:56.000Z), "!AIVDM,1,1,,B,15MwrC0P0ore<idGBMBPD55h0000,0*45",
+    datetime(2024-07-25T02:52:57.000Z), "!AIVDM,1,1,,A,15MwrC0P05re<b0GBOw=Ibcj0000,0*17",
+    datetime(2024-07-25T02:54:01.000Z), "!AIVDM,1,1,,B,15MwrC0P00re<b0GBOudU:f20000,0*53"
+]
+
+// ============================================================
+// BLOCK 3: Ingest AIS parser coverage records
+// ============================================================
+//
+// Purpose:
+//   Exercises message classification across multiple NMEA/AIS message
+//   types and includes one intentionally malformed sentence to validate
+//   the AisDeadLetter path.
+//
+// Map note:
+//   These records are useful for parser/routing validation, but some
+//   are also position reports in other locations. Use the filtered map
+//   query in BLOCK 5 for the ferry-track visualization.
+//
+.set-or-append AisRaw <| 
+datatable (ReceivedTime:datetime,RawSentence:string)
+[
+    // Types 1, 2, 3: Class A position reports
+    datetime(2026-09-14 14:00:01),
+    "!AIVDM,1,1,,A,13aEOK?P00PD2wVMdLDRhgvL289?,0*26",
+    datetime(2026-09-14 14:00:02),
+    "!AIVDM,1,1,,B,177KQJ5000G?tO`K>RA1wUbN0TKH,0*5C",
+    datetime(2026-09-14 14:00:03),
+    "!AIVDM,1,1,,A,15NPOOPP00o?b=bE`UNv4?w428D;,0*24",
+    // Type 4: Base station report
+    datetime(2026-09-14 14:00:04),
+    "!AIVDM,1,1,,A,403OweAuvUD4c6NGm6D96G70092D,0*58",
+    // Type 5: Static and voyage data, multipart
+    datetime(2026-09-14 14:00:05),
+    "!AIVDM,2,1,3,B,55P5TL01VIaAL@7WKO@mBplU@<PDhh000000001S;AJ::4A80?4i@E53,0*3E",
+    datetime(2026-09-14 14:00:05),
+    "!AIVDM,2,2,3,B,1@0000000000000,2*55",
+    // Type 6: Addressed binary message
+    datetime(2026-09-14 14:00:06),
+    "!AIVDM,1,1,4,B,6>jR0600V:C0>da4P106P00,2*02",
+    // Type 8: Binary broadcast
+    datetime(2026-09-14 14:00:07),
+    "!AIVDM,1,1,1,B,8>h8nkP0Glr=<hFI0D6??wvlFR06EuOwgwl?wnSwe7wvlOw?sAwwnSGmwvh0,0*17",
+    // Type 9: SAR aircraft position
+    datetime(2026-09-14 14:00:08),
+    "!AIVDO,1,1,,A,95M2oQ@41Tr4L4H@eRvQ;2h20000,0*0D",
+    // Type 14: Safety-related broadcast
+    datetime(2026-09-14 14:00:09),
+    "!AIVDM,1,1,,B,>>M4fWA<59B1@E=@,0*17",
+    // Type 18: Standard Class B position
+    datetime(2026-09-14 14:00:10),
+    "!AIVDM,1,1,,A,B5NJ;PP005l4ot5Isbl03wsUkP06,0*76",
+    // Type 19: Extended Class B position
+    datetime(2026-09-14 14:00:11),
+    "!AIVDM,2,1,0,B,C8u:8C@t7@TnGCKfm6Po`e6N`:Va0L2J;06HV50JV?SjBPL3,0*28",
+    datetime(2026-09-14 14:00:11),
+    "!AIVDM,2,2,0,B,11RP,0*17",
+    // Type 24: Class B static data
+    datetime(2026-09-14 14:00:12),
+    "!AIVDO,1,1,,B,H1c2;qA@PU>0U>060<h5=>0:1Dp,2*7D",
+    // Type 27: Long-range AIS position
+    datetime(2026-09-14 14:00:13),
+    "!AIVDM,1,1,,A,KCQ9r=hrFUnH7P00,0*41",
+    datetime(2026-09-14 15:00:13),
+    "!HIMYLF,9,9,,G,Hello!IsItMeYouAreLookingFor?,0*41"
+];
+
+// ============================================================
+// BLOCK 4A: Validate parser routing
+// ============================================================
+
+AisNormalized
+| summarize Records = count() by Category, MessageType, MessageName, ParseSucceeded
+| order by Category asc, MessageType asc
+
+// ============================================================
+// BLOCK 4B: Validate dead-letter behavior
+// ============================================================
+
+AisDeadLetter
+| project ReceivedTime, RawSentence, ParseError
+| order by ReceivedTime asc
+
+// ============================================================
+// BLOCK 5: Render the Staten Island Ferry sample track
+// ============================================================
+
+let FerrySampleMmsi = 367000140;
+let FerrySampleStart = datetime(2024-07-25T01:00:00Z);
+let FerrySampleEnd = datetime(2024-07-25T03:00:00Z);
+AisDecodedClassAPosition
+| where IsValidPosition
+| where MMSI == FerrySampleMmsi
+| where ReceivedTime between (FerrySampleStart .. FerrySampleEnd)
+| project ReceivedTime, MMSI, Longitude, Latitude, SpeedOverGroundKnots, CourseOverGroundDegrees, TrueHeadingDegrees
+| render scatterchart with (kind=map, title="Decoded Staten Island Ferry sample positions", legend=hidden)

@@ -1,0 +1,219 @@
+// ============================================================
+// Raw AIS / NMEA telemetry landing zone
+//
+// In production, these messages would arrive continuously from
+// an AIS receiver network, public AIS source such as NOAA's
+// public AIS archive, Event Hub, Kafka, or Eventstream.
+//
+// Each record below is a standards-compliant AIS AIVDM sentence
+// encoded according to NMEA 0183 and ITU-R M.1371.
+//
+// The payload contains vessel position information encoded in
+// AIS six-bit armoring format. At this stage the data remains
+// in its original wire format exactly as received from the
+// source system.
+//
+// For demonstration purposes we use a Staten Island Ferry sample
+// derived from NOAA's public AIS archive for 2024:
+// https://coast.noaa.gov/htdata/CMSP/AISDataHandler/2024/
+//
+// The source data has been prepared for this KQL demo and re-encoded
+// into valid AIS message type 1 position reports.
+//
+// The next step in the demo is to apply a KQL decoding function
+// that transforms these raw NMEA sentences into structured
+// columns such as:
+//
+//     MMSI
+//     Latitude
+//     Longitude
+//     SpeedOverGround
+//     CourseOverGround
+//     Heading
+//
+// ============================================================
+let MyTrack =
+datatable (ReceivedTime:datetime, RawSentence:string)
+[
+    datetime(2024-07-25T01:05:15.000Z), "!AIVDM,1,1,,A,15MwrC0P1lre;OtGBHMaTW`N0000,0*4F",
+    datetime(2024-07-25T01:06:19.000Z), "!AIVDM,1,1,,B,15MwrC0P24re:9DGBDG9JWHV0000,0*20",
+    datetime(2024-07-25T01:07:22.000Z), "!AIVDM,1,1,,A,15MwrC0P29re8uHGB>Ha6W@d0000,0*07",
+    datetime(2024-07-25T01:08:32.000Z), "!AIVDM,1,1,,B,15MwrC0P2:re7mhGB8<`r7100000,0*42",
+    datetime(2024-07-25T01:09:33.000Z), "!AIVDM,1,1,,A,15MwrC0P28re6iDGB1n8eVg20000,0*4B",
+    datetime(2024-07-25T01:10:35.000Z), "!AIVDM,1,1,,B,15MwrC0P25re5rhGArd`?VM60000,0*17",
+    datetime(2024-07-25T01:11:42.000Z), "!AIVDM,1,1,,A,15MwrC0P27re57<GAj68?VUD0000,0*7F",
+    datetime(2024-07-25T01:12:53.000Z), "!AIVDM,1,1,,B,15MwrC0P2:re4:LGAaK8DVSb0000,0*20",
+    datetime(2024-07-25T01:13:55.000Z), "!AIVDM,1,1,,A,15MwrC0P2:re3EtGAQJ836=f0000,0*2F",
+    datetime(2024-07-25T01:15:02.000Z), "!AIVDM,1,1,,B,15MwrC0P24re2mpGAHD7iV>40000,0*7C",
+    datetime(2024-07-25T01:16:12.000Z), "!AIVDM,1,1,,A,15MwrC0P28re23LGA?G8:VLH0000,0*37",
+    datetime(2024-07-25T01:17:23.000Z), "!AIVDM,1,1,,B,15MwrC0P29re1;tGA6M8:VLf0000,0*2B",
+    datetime(2024-07-25T01:18:31.000Z), "!AIVDM,1,1,,A,15MwrC0P27re0M4G@uD836Lv0000,0*23",
+    datetime(2024-07-25T01:19:42.000Z), "!AIVDM,1,1,,B,15MwrC0P2:rdwT4G@lB`DVaD0000,0*3D",
+    datetime(2024-07-25T01:20:52.000Z), "!AIVDM,1,1,,A,15MwrC0P2:rdvLlG@dC8jW7`0000,0*73",
+    datetime(2024-07-25T01:22:02.000Z), "!AIVDM,1,1,,B,15MwrC0P2<rdtt4G@WIaTWP40000,0*79",
+    datetime(2024-07-25T01:23:04.000Z), "!AIVDM,1,1,,A,15MwrC0P1RrdsllG@SAa6Vv80000,0*15",
+    datetime(2024-07-25T01:24:08.000Z), "!AIVDM,1,1,,B,15MwrC0P0srds@lG@OQ`NVR@0000,0*33",
+    datetime(2024-07-25T01:25:13.000Z), "!AIVDM,1,1,,A,15MwrC0P0Crds1lG@MO8NVhJ0000,0*05",
+    datetime(2024-07-25T01:26:16.000Z), "!AIVDM,1,1,,B,15MwrC0P00rds38G@MVa46jP0000,0*61",
+    datetime(2024-07-25T02:34:19.000Z), "!AIVDM,1,1,,A,15MwrC0P0SrdsAhG@O<QhQJV0000,0*66",
+    datetime(2024-07-25T02:35:20.000Z), "!AIVDM,1,1,,B,15MwrC0P1srdso@G@RBR4WT`0000,0*50",
+    datetime(2024-07-25T02:36:21.000Z), "!AIVDM,1,1,,A,15MwrC0P2HrduVLG@V`2iRHb0000,0*58",
+    datetime(2024-07-25T02:37:22.000Z), "!AIVDM,1,1,,B,15MwrC0P2MrdvoLG@brR4W<d0000,0*08",
+    datetime(2024-07-25T02:38:26.000Z), "!AIVDM,1,1,,A,15MwrC0P2Ure0>@G@lhQLQ<l0000,0*68",
+    datetime(2024-07-25T02:39:28.000Z), "!AIVDM,1,1,,B,15MwrC0P2Rre138G@tfQ;6bp0000,0*5C",
+    datetime(2024-07-25T02:40:33.000Z), "!AIVDM,1,1,,A,15MwrC0P2Tre27HGA7R1=Q520000,0*4C",
+    datetime(2024-07-25T02:41:34.000Z), "!AIVDM,1,1,,B,15MwrC0P2Vre2vpGA?s1=VU40000,0*7C",
+    datetime(2024-07-25T02:42:39.000Z), "!AIVDM,1,1,,A,15MwrC0P2Vre3v4GAKQPt0i>0000,0*14",
+    datetime(2024-07-25T02:43:40.000Z), "!AIVDM,1,1,,B,15MwrC0P2Tre4bDGASrQ66W@0000,0*48",
+    datetime(2024-07-25T02:44:44.000Z), "!AIVDM,1,1,,A,15MwrC0P2Tre5fTGAgIQ8Q1H0000,0*56",
+    datetime(2024-07-25T02:45:45.000Z), "!AIVDM,1,1,,B,15MwrC0P2Wre6N0GAoi116WJ0000,0*5B",
+    datetime(2024-07-25T02:46:51.000Z), "!AIVDM,1,1,,A,15MwrC0P2cre7V<GB3SQ@1?V0000,0*7E",
+    datetime(2024-07-25T02:47:52.000Z), "!AIVDM,1,1,,B,15MwrC0P2fre8UtGB;J1QW7`0000,0*04",
+    datetime(2024-07-25T02:48:53.000Z), "!AIVDM,1,1,,A,15MwrC0P2bre:AhGBC=RF29b0000,0*1B",
+    datetime(2024-07-25T02:49:54.000Z), "!AIVDM,1,1,,B,15MwrC0P1qre;RtGBER35Wed0000,0*42",
+    datetime(2024-07-25T02:50:55.000Z), "!AIVDM,1,1,,A,15MwrC0P1Dre<UDGBJD1;0Ef0000,0*14",
+    datetime(2024-07-25T02:51:56.000Z), "!AIVDM,1,1,,B,15MwrC0P0ore<idGBMBPD55h0000,0*45",
+    datetime(2024-07-25T02:52:57.000Z), "!AIVDM,1,1,,A,15MwrC0P05re<b0GBOw=Ibcj0000,0*17",
+    datetime(2024-07-25T02:54:01.000Z), "!AIVDM,1,1,,B,15MwrC0P00re<b0GBOudU:f20000,0*53"
+];
+    MyTrack
+    // Parse the NMEA envelope using regex
+    | extend MessageFamily =
+        extract(@"^!(AIVDM|AIVDO),", 1, RawSentence)
+    | extend FragmentCount =
+        toint(extract(@"^!(?:AIVDM|AIVDO),(\d+),", 1, RawSentence))
+    | extend FragmentNumber =
+        toint(extract(@"^!(?:AIVDM|AIVDO),\d+,(\d+),", 1, RawSentence))
+    | extend Channel =
+        extract(@"^!(?:AIVDM|AIVDO),\d+,\d+,[^,]*,([AB]),", 1, RawSentence)
+    | extend Payload =
+        extract(@"^!(?:AIVDM|AIVDO),\d+,\d+,[^,]*,[AB],([^,]+),", 1, RawSentence)
+    // This demo dataset contains single-fragment type 1 reports
+    | where MessageFamily == "AIVDM"
+    | where FragmentCount == 1 and FragmentNumber == 1
+    | where strlen(Payload) == 28
+    // Convert the 28 payload characters into Unicode code points
+    | extend CharacterCodes = unicode_codepoints_from_string(Payload)
+    // Expand one row into the 168 AIS bits
+    | mv-apply BitPosition = range(0, 167, 1) to typeof(long) on
+    (
+        extend CharacterPosition = toint(BitPosition / 6)
+        | extend PositionInCharacter = toint(BitPosition % 6)
+        | extend CharacterCode =
+            tolong(CharacterCodes[CharacterPosition])
+        // AIS six-bit unarmoring:
+        // ASCII - 48, then subtract another 8 when value > 39
+        | extend SixBitValue =
+            CharacterCode
+            - 48
+            - iff(CharacterCode - 48 > 39, 8, 0)
+        | extend BitValue =
+            binary_and(
+                binary_shift_right(
+                    SixBitValue,
+                    5 - PositionInCharacter
+                ),
+                1
+            )
+        // Extract the fields from the AIS type 1 bit layout
+        | summarize
+    MessageTypeValue =
+        sum(iff(
+            BitPosition between (0 .. 5),
+            tolong(BitValue * pow(2, 5 - BitPosition)),
+            long(0)
+        )),
+    MMSIValue =
+        sum(iff(
+            BitPosition between (8 .. 37),
+            tolong(BitValue * pow(2, 37 - BitPosition)),
+            long(0)
+        )),
+    SpeedValue =
+        sum(iff(
+            BitPosition between (50 .. 59),
+            tolong(BitValue * pow(2, 59 - BitPosition)),
+            long(0)
+        )),
+    PositionAccuracyValue =
+        sum(iff(
+            BitPosition == 60,
+            tolong(BitValue),
+            long(0)
+        )),
+    LongitudeValue =
+        sum(iff(
+            BitPosition between (61 .. 88),
+            tolong(BitValue * pow(2, 88 - BitPosition)),
+            long(0)
+        )),
+    LatitudeValue =
+        sum(iff(
+            BitPosition between (89 .. 115),
+            tolong(BitValue * pow(2, 115 - BitPosition)),
+            long(0)
+        )),
+    CourseValue =
+        sum(iff(
+            BitPosition between (116 .. 127),
+            tolong(BitValue * pow(2, 127 - BitPosition)),
+            long(0)
+        )),
+    HeadingValue =
+        sum(iff(
+            BitPosition between (128 .. 136),
+            tolong(BitValue * pow(2, 136 - BitPosition)),
+            long(0)
+        )),
+    SecondValue =
+        sum(iff(
+            BitPosition between (137 .. 142),
+            tolong(BitValue * pow(2, 142 - BitPosition)),
+            long(0)
+        ))
+    by ReceivedTime, RawSentence, Channel
+    )
+    | extend
+        MessageType = tolong(MessageTypeValue),
+        MMSI = tolong(MMSIValue)
+    // Demo only supports Class A position reports
+    | where MessageType in (1, 2, 3)
+    // Convert two's-complement coordinates
+    | extend LongitudeSigned =
+        iff(
+            LongitudeValue >= 134217728,
+            LongitudeValue - 268435456,
+            LongitudeValue
+        )
+    | extend LatitudeSigned =
+        iff(
+            LatitudeValue >= 67108864,
+            LatitudeValue - 134217728,
+            LatitudeValue
+        )
+    // AIS coordinates use 1/10,000 minute units:
+    // decimal degrees = encoded value / 600,000
+    | extend
+        Longitude = LongitudeSigned / 600000.0,
+        Latitude = LatitudeSigned / 600000.0,
+        SpeedKnots = SpeedValue / 10.0,
+        CourseDegrees = CourseValue / 10.0,
+        HeadingDegrees = tolong(HeadingValue),
+        UTCSecond = tolong(SecondValue),
+        PositionAccuracy =
+            tobool(toint(PositionAccuracyValue))
+    | project
+        ReceivedTime,
+        RawSentence,
+        MessageType,
+        MMSI,
+        Channel,
+        Latitude,
+        Longitude,
+        SpeedKnots,
+        CourseDegrees,
+        HeadingDegrees,
+        UTCSecond,
+        PositionAccuracy
+// Comment out that last line if you want to just look at the data        
+| project Longitude, Latitude | render scatterchart with (kind=map, title="Decoded AIS Class A positions", legend=hidden)

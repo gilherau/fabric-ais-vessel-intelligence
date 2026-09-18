@@ -1,0 +1,23 @@
+# Operating system files
+Thumbs.db
+Desktop.ini
+.DS_Store
+
+# Editor files
+.vscode/
+.idea/
+*.swp
+*.swo
+
+# Local outputs
+*.log
+*.tmp
+*.bak
+exports/
+out/
+
+# Keep large local datasets out of the public sample repo by default
+*.csv
+*.zip
+*.parquet
+*.avro

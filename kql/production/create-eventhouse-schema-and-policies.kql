@@ -1,0 +1,540 @@
+// ============================================================
+// Microsoft Fabric AIS Eventhouse deployment script
+//
+// Purpose:
+//   Creates the production-ready AIS processing foundation:
+//   bronze raw landing table, silver normalization, gold routed
+//   message tables, Class A position decoding, dead-letter capture,
+//   and update policies.
+//
+// Usage:
+//   Review the table names and run this as a database script in the
+//   target Fabric KQL database.
+//
+// Safety:
+//   This solution is for analytics and operational intelligence
+//   scenarios only. Do not use decoded sample output for navigation,
+//   collision avoidance, emergency response, or safety-of-life
+//   decisions.
+//
+// ============================================================
+
+.execute database script <|
+.create-merge table AisNormalized (ReceivedTime:datetime, SentenceType:string, TotalFragments:long, FragmentNumber:long, SequenceId:string, Channel:string, Payload:string, FillBits:long, Checksum:string, MessageType:long, MessageName:string, Category:string, IsMultipart:bool, PayloadLength:long, ParseSucceeded:bool) with (folder = "Silver") 
+.create-merge table AisPositionReports (ReceivedTime:datetime, SentenceType:string, TotalFragments:long, FragmentNumber:long, SequenceId:string, Channel:string, Payload:string, FillBits:long, Checksum:string, MessageType:long, MessageName:string, Category:string, IsMultipart:bool, PayloadLength:long, ParseSucceeded:bool) with (folder = "Gold") 
+.create-merge table AisStaticReports (ReceivedTime:datetime, SentenceType:string, TotalFragments:long, FragmentNumber:long, SequenceId:string, Channel:string, Payload:string, FillBits:long, Checksum:string, MessageType:long, MessageName:string, Category:string, IsMultipart:bool, PayloadLength:long, ParseSucceeded:bool) with (folder = "Gold") 
+.create-merge table AisInfrastructureReports (ReceivedTime:datetime, SentenceType:string, TotalFragments:long, FragmentNumber:long, SequenceId:string, Channel:string, Payload:string, FillBits:long, Checksum:string, MessageType:long, MessageName:string, Category:string, IsMultipart:bool, PayloadLength:long, ParseSucceeded:bool) with (folder = "Gold") 
+.create-merge table AisBinaryMessages (ReceivedTime:datetime, SentenceType:string, TotalFragments:long, FragmentNumber:long, SequenceId:string, Channel:string, Payload:string, FillBits:long, Checksum:string, MessageType:long, MessageName:string, Category:string, IsMultipart:bool, PayloadLength:long, ParseSucceeded:bool) with (folder = "Gold") 
+.create-merge table AisSafetyMessages (ReceivedTime:datetime, SentenceType:string, TotalFragments:long, FragmentNumber:long, SequenceId:string, Channel:string, Payload:string, FillBits:long, Checksum:string, MessageType:long, MessageName:string, Category:string, IsMultipart:bool, PayloadLength:long, ParseSucceeded:bool) with (folder = "Gold") 
+.create-merge table AisControlMessages (ReceivedTime:datetime, SentenceType:string, TotalFragments:long, FragmentNumber:long, SequenceId:string, Channel:string, Payload:string, FillBits:long, Checksum:string, MessageType:long, MessageName:string, Category:string, IsMultipart:bool, PayloadLength:long, ParseSucceeded:bool) with (folder = "Gold") 
+.create-merge table AisDeadLetter (ReceivedTime:datetime, RawSentence:string, ParseError:string) with (folder = "Silver") 
+.create-merge table AisRaw (ReceivedTime:datetime, RawSentence:string) with (folder = "Bronze") 
+.create-merge table AisDecodedClassAPosition (ReceivedTime:datetime, MessageType:long, RepeatIndicator:long, MMSI:long, NavigationStatus:long, RateOfTurnRaw:long, SpeedOverGroundKnots:real, PositionAccuracy:bool, Longitude:real, Latitude:real, CourseOverGroundDegrees:real, TrueHeadingDegrees:long, UTCSecond:long, ManeuverIndicator:long, RAIM:bool, IsValidPosition:bool, SentenceType:string, TotalFragments:long, FragmentNumber:long, SequenceId:string, Channel:string, Payload:string, FillBits:long, Checksum:string) with (folder = "Gold") 
+.create-or-alter function with (folder = "AIS", docstring = "Decode AIS AIVDM Class A position reports", skipvalidation = "true") DecodeAIS() {
+    AisRaw
+    | extend ReceivedTime = ingestion_time()
+    // Parse the NMEA envelope using regex
+    | extend MessageFamily =
+        extract(@"^!(AIVDM|AIVDO),", 1, RawSentence)
+    | extend FragmentCount =
+        toint(extract(@"^!(?:AIVDM|AIVDO),(\d+),", 1, RawSentence))
+    | extend FragmentNumber =
+        toint(extract(@"^!(?:AIVDM|AIVDO),\d+,(\d+),", 1, RawSentence))
+    | extend Channel =
+        extract(@"^!(?:AIVDM|AIVDO),\d+,\d+,[^,]*,([AB]),", 1, RawSentence)
+    | extend Payload =
+        extract(@"^!(?:AIVDM|AIVDO),\d+,\d+,[^,]*,[AB],([^,]+),", 1, RawSentence)
+    // This demo dataset contains single-fragment type 1 reports
+    | where MessageFamily == "AIVDM"
+    | where FragmentCount == 1 and FragmentNumber == 1
+    | where strlen(Payload) == 28
+    // Convert the 28 payload characters into Unicode code points
+    | extend CharacterCodes = unicode_codepoints_from_string(Payload)
+    // Expand one row into the 168 AIS bits
+    | mv-apply BitPosition = range(0, 167, 1) to typeof(long) on
+    (
+        extend CharacterPosition = toint(BitPosition / 6)
+        | extend PositionInCharacter = toint(BitPosition % 6)
+        | extend CharacterCode =
+            tolong(CharacterCodes[CharacterPosition])
+        // AIS six-bit unarmoring:
+        // ASCII - 48, then subtract another 8 when value > 39
+        | extend SixBitValue =
+            CharacterCode
+            - 48
+            - iff(CharacterCode - 48 > 39, 8, 0)
+        | extend BitValue =
+            binary_and(
+                binary_shift_right(
+                    SixBitValue,
+                    5 - PositionInCharacter
+                ),
+                1
+            )
+        // Extract the fields from the AIS type 1 bit layout
+        | summarize
+    MessageTypeValue =
+        sum(iff(
+            BitPosition between (0 .. 5),
+            tolong(BitValue * pow(2, 5 - BitPosition)),
+            long(0)
+        )),
+    MMSIValue =
+        sum(iff(
+            BitPosition between (8 .. 37),
+            tolong(BitValue * pow(2, 37 - BitPosition)),
+            long(0)
+        )),
+    SpeedValue =
+        sum(iff(
+            BitPosition between (50 .. 59),
+            tolong(BitValue * pow(2, 59 - BitPosition)),
+            long(0)
+        )),
+    PositionAccuracyValue =
+        sum(iff(
+            BitPosition == 60,
+            tolong(BitValue),
+            long(0)
+        )),
+    LongitudeValue =
+        sum(iff(
+            BitPosition between (61 .. 88),
+            tolong(BitValue * pow(2, 88 - BitPosition)),
+            long(0)
+        )),
+    LatitudeValue =
+        sum(iff(
+            BitPosition between (89 .. 115),
+            tolong(BitValue * pow(2, 115 - BitPosition)),
+            long(0)
+        )),
+    CourseValue =
+        sum(iff(
+            BitPosition between (116 .. 127),
+            tolong(BitValue * pow(2, 127 - BitPosition)),
+            long(0)
+        )),
+    HeadingValue =
+        sum(iff(
+            BitPosition between (128 .. 136),
+            tolong(BitValue * pow(2, 136 - BitPosition)),
+            long(0)
+        )),
+    SecondValue =
+        sum(iff(
+            BitPosition between (137 .. 142),
+            tolong(BitValue * pow(2, 142 - BitPosition)),
+            long(0)
+        ))
+    by ReceivedTime, RawSentence, Channel
+    )
+    | extend
+        MessageType = tolong(MessageTypeValue),
+        MMSI = tolong(MMSIValue)
+    // Demo only supports Class A position reports
+    | where MessageType in (1, 2, 3)
+    // Convert two's-complement coordinates
+    | extend LongitudeSigned =
+        iff(
+            LongitudeValue >= 134217728,
+            LongitudeValue - 268435456,
+            LongitudeValue
+        )
+    | extend LatitudeSigned =
+        iff(
+            LatitudeValue >= 67108864,
+            LatitudeValue - 134217728,
+            LatitudeValue
+        )
+    // AIS coordinates use 1/10,000 minute units:
+    // decimal degrees = encoded value / 600,000
+    | extend
+        Longitude = LongitudeSigned / 600000.0,
+        Latitude = LatitudeSigned / 600000.0,
+        SpeedKnots = SpeedValue / 10.0,
+        CourseDegrees = CourseValue / 10.0,
+        HeadingDegrees = tolong(HeadingValue),
+        UTCSecond = tolong(SecondValue),
+        PositionAccuracy =
+            tobool(toint(PositionAccuracyValue))
+    | project
+        ReceivedTime,
+        RawSentence,
+        MessageType,
+        MMSI,
+        Channel,
+        Latitude,
+        Longitude,
+        SpeedKnots,
+        CourseDegrees,
+        HeadingDegrees,
+        UTCSecond,
+        PositionAccuracy
+}
+.create-or-alter function with (folder = "ParserFunctions", docstring = "Parse AIVDM/AIVDO envelope and classify AIS message type", skipvalidation = "true") NormalizeAis() {
+    let NmeaRegex =
+        @"^!(AIVDM|AIVDO),(\d+),(\d+),([^,]*),([AB]?),([^,]+),(\d+)\*([0-9A-Fa-f]{2})$";
+    let AisMessageTypes =
+        datatable
+        (
+            MessageType: long,
+            MessageName: string,
+            Category: string
+        )
+        [
+            1,  "Position Report Class A",              "Position",
+            2,  "Assigned Position Report Class A",     "Position",
+            3,  "Interrogated Position Report Class A", "Position",
+            4,  "Base Station Report",                  "Infrastructure",
+            5,  "Static and Voyage Data",               "Static",
+            6,  "Addressed Binary Message",              "Binary",
+            7,  "Binary Acknowledgement",                "Binary",
+            8,  "Binary Broadcast Message",              "Binary",
+            9,  "SAR Aircraft Position Report",          "Position",
+            10, "UTC and Date Inquiry",                  "Control",
+            11, "UTC and Date Response",                 "Infrastructure",
+            12, "Addressed Safety Message",              "Safety",
+            13, "Safety Acknowledgement",                "Safety",
+            14, "Safety Broadcast Message",              "Safety",
+            15, "Interrogation",                         "Control",
+            16, "Assignment Mode Command",               "Control",
+            17, "DGNSS Broadcast",                       "Infrastructure",
+            18, "Class B Position Report",               "Position",
+            19, "Extended Class B Position Report",      "Position",
+            20, "Data Link Management",                  "Control",
+            21, "Aid to Navigation Report",              "Infrastructure",
+            22, "Channel Management",                    "Control",
+            23, "Group Assignment Command",              "Control",
+            24, "Class B Static Data",                   "Static",
+            25, "Single Slot Binary Message",            "Binary",
+            26, "Multi Slot Binary Message",             "Binary",
+            27, "Long Range Position Report",            "Position"
+        ];
+    AisRaw
+    | extend
+        SentenceType  = extract(NmeaRegex, 1, RawSentence),
+        TotalFragments = tolong(extract(NmeaRegex, 2, RawSentence)),
+        FragmentNumber = tolong(extract(NmeaRegex, 3, RawSentence)),
+        SequenceId     = extract(NmeaRegex, 4, RawSentence),
+        Channel        = extract(NmeaRegex, 5, RawSentence),
+        Payload        = extract(NmeaRegex, 6, RawSentence),
+        FillBits       = tolong(extract(NmeaRegex, 7, RawSentence)),
+        Checksum       = toupper(extract(NmeaRegex, 8, RawSentence))
+    | extend
+        PayloadPrefix = substring(Payload, 0, 1)
+    | extend
+        MessageType = tolong(
+            indexof(
+                "123456789:;<=>?@ABCDEFGHIJK",
+                PayloadPrefix
+            ) + 1
+        )
+    | lookup kind=leftouter AisMessageTypes on MessageType
+    | extend
+        IsMultipart = TotalFragments > 1,
+        PayloadLength = tolong(strlen(Payload)),
+        ParseSucceeded =
+            isnotempty(Payload)
+            and MessageType between (1 .. 27)
+            and isnotempty(MessageName)
+    | project
+        ReceivedTime,
+        SentenceType,
+        TotalFragments,
+        FragmentNumber,
+        SequenceId,
+        Channel,
+        Payload,
+        FillBits,
+        Checksum,
+        MessageType,
+        MessageName,
+        Category,
+        IsMultipart,
+        PayloadLength,
+        ParseSucceeded
+}
+.create-or-alter function with (folder = "AIS/Routing", skipvalidation = "true") RouteAisPositionReports() {
+    AisNormalized
+    | where ParseSucceeded
+    | where Category == "Position"
+    | project
+        ReceivedTime,
+        SentenceType,
+        TotalFragments,
+        FragmentNumber,
+        SequenceId,
+        Channel,
+        Payload,
+        FillBits,
+        Checksum,
+        MessageType,
+        MessageName,
+        Category,
+        IsMultipart,
+        PayloadLength,
+        ParseSucceeded
+}
+.create-or-alter function with (folder = "AIS/Routing", skipvalidation = "true") RouteAisStaticReports() {
+    AisNormalized
+    | where ParseSucceeded
+    | where Category == "Static"
+    | project
+        ReceivedTime,
+        SentenceType,
+        TotalFragments,
+        FragmentNumber,
+        SequenceId,
+        Channel,
+        Payload,
+        FillBits,
+        Checksum,
+        MessageType,
+        MessageName,
+        Category,
+        IsMultipart,
+        PayloadLength,
+        ParseSucceeded
+}
+.create-or-alter function with (folder = "AIS/Routing", skipvalidation = "true") RouteAisInfrastructureReports() {
+    AisNormalized
+    | where ParseSucceeded
+    | where Category == "Infrastructure"
+    | project
+        ReceivedTime,
+        SentenceType,
+        TotalFragments,
+        FragmentNumber,
+        SequenceId,
+        Channel,
+        Payload,
+        FillBits,
+        Checksum,
+        MessageType,
+        MessageName,
+        Category,
+        IsMultipart,
+        PayloadLength,
+        ParseSucceeded
+}
+.create-or-alter function with (folder = "AIS/Routing", skipvalidation = "true") RouteAisBinaryMessages() {
+    AisNormalized
+    | where ParseSucceeded
+    | where Category == "Binary"
+    | project
+        ReceivedTime,
+        SentenceType,
+        TotalFragments,
+        FragmentNumber,
+        SequenceId,
+        Channel,
+        Payload,
+        FillBits,
+        Checksum,
+        MessageType,
+        MessageName,
+        Category,
+        IsMultipart,
+        PayloadLength,
+        ParseSucceeded
+}
+.create-or-alter function with (folder = "AIS/Routing", skipvalidation = "true") RouteAisSafetyMessages() {
+    AisNormalized
+    | where ParseSucceeded
+    | where Category == "Safety"
+    | project
+        ReceivedTime,
+        SentenceType,
+        TotalFragments,
+        FragmentNumber,
+        SequenceId,
+        Channel,
+        Payload,
+        FillBits,
+        Checksum,
+        MessageType,
+        MessageName,
+        Category,
+        IsMultipart,
+        PayloadLength,
+        ParseSucceeded
+}
+.create-or-alter function with (folder = "AIS/Routing", skipvalidation = "true") RouteAisControlMessages() {
+    AisNormalized
+    | where ParseSucceeded
+    | where Category == "Control"
+    | project
+        ReceivedTime,
+        SentenceType,
+        TotalFragments,
+        FragmentNumber,
+        SequenceId,
+        Channel,
+        Payload,
+        FillBits,
+        Checksum,
+        MessageType,
+        MessageName,
+        Category,
+        IsMultipart,
+        PayloadLength,
+        ParseSucceeded
+}
+.create-or-alter function with (folder = "AIS/Routing", skipvalidation = "true") RouteAisDeadLetter() {
+    let NmeaRegex =
+        @"^!(AIVDM|AIVDO),(\d+),(\d+),([^,]*),([AB]?),([^,]+),(\d+)\*([0-9A-Fa-f]{2})$";
+    AisRaw
+    | extend
+        Payload = extract(NmeaRegex, 6, RawSentence)
+    | extend
+        PayloadPrefix = substring(Payload, 0, 1)
+    | extend
+        MessageType = tolong(
+            indexof(
+                "123456789:;<=>?@ABCDEFGHIJK",
+                PayloadPrefix
+            ) + 1
+        )
+    | where isempty(Payload) or MessageType !between (1 .. 27)
+    | extend ParseError = case(
+        isempty(Payload),
+            "NMEA envelope did not match the AIVDM/AIVDO regular expression",
+        MessageType !between (1 .. 27),
+            "AIS payload prefix does not identify message type 1 through 27",
+        "Unknown parsing error"
+    )
+    | project
+        ReceivedTime,
+        RawSentence,
+        ParseError
+}
+.create-or-alter function with (folder = "AIS/Decoding", docstring = "Decode single-fragment AIS Class A position reports, message types 1, 2, and 3", skipvalidation = "true") DecodeAisClassAPosition() {
+    AisPositionReports
+    | where isnotempty(Payload)
+    | where strlen(Payload) == 28
+    | serialize SourceRowId = row_number()
+    | extend CharacterCodes = unicode_codepoints_from_string(Payload)
+    | extend BitPositions = range(0, 167, 1)
+    | mv-expand BitPosition = BitPositions to typeof(long)
+    | extend CharacterIndex = toint(BitPosition / 6)
+    | extend BitInCharacter = toint(BitPosition % 6)
+    | extend CharacterCode = tolong(CharacterCodes[CharacterIndex])
+    | extend SixBitValue = CharacterCode - 48 - iff(CharacterCode - 48 > 39, 8, 0)
+    | extend BitValue = tolong(binary_and(binary_shift_right(SixBitValue, 5 - BitInCharacter), 1))
+    | summarize
+        DecodedMessageType = sum(iff(BitPosition between (0 .. 5), BitValue * binary_shift_left(1, toint(5 - BitPosition)), long(0))),
+        RepeatIndicator = sum(iff(BitPosition between (6 .. 7), BitValue * binary_shift_left(1, toint(7 - BitPosition)), long(0))),
+        MMSI = sum(iff(BitPosition between (8 .. 37), BitValue * binary_shift_left(1, toint(37 - BitPosition)), long(0))),
+        NavigationStatus = sum(iff(BitPosition between (38 .. 41), BitValue * binary_shift_left(1, toint(41 - BitPosition)), long(0))),
+        RateOfTurnUnsigned = sum(iff(BitPosition between (42 .. 49), BitValue * binary_shift_left(1, toint(49 - BitPosition)), long(0))),
+        SpeedOverGroundRaw = sum(iff(BitPosition between (50 .. 59), BitValue * binary_shift_left(1, toint(59 - BitPosition)), long(0))),
+        PositionAccuracyRaw = sum(iff(BitPosition == 60, BitValue, long(0))),
+        LongitudeUnsigned = sum(iff(BitPosition between (61 .. 88), BitValue * binary_shift_left(1, toint(88 - BitPosition)), long(0))),
+        LatitudeUnsigned = sum(iff(BitPosition between (89 .. 115), BitValue * binary_shift_left(1, toint(115 - BitPosition)), long(0))),
+        CourseOverGroundRaw = sum(iff(BitPosition between (116 .. 127), BitValue * binary_shift_left(1, toint(127 - BitPosition)), long(0))),
+        TrueHeadingRaw = sum(iff(BitPosition between (128 .. 136), BitValue * binary_shift_left(1, toint(136 - BitPosition)), long(0))),
+        UTCSecondRaw = sum(iff(BitPosition between (137 .. 142), BitValue * binary_shift_left(1, toint(142 - BitPosition)), long(0))),
+        ManeuverIndicator = sum(iff(BitPosition between (143 .. 144), BitValue * binary_shift_left(1, toint(144 - BitPosition)), long(0))),
+        RAIMRaw = sum(iff(BitPosition == 148, BitValue, long(0)))
+      by SourceRowId,
+         ReceivedTime,
+         SentenceType,
+         TotalFragments,
+         FragmentNumber,
+         SequenceId,
+         Channel,
+         Payload,
+         FillBits,
+         Checksum
+    | where DecodedMessageType in (1, 2, 3)
+    | extend
+        LongitudeSigned = iff(
+            LongitudeUnsigned >= binary_shift_left(1, 27),
+            LongitudeUnsigned - binary_shift_left(1, 28),
+            LongitudeUnsigned
+        ),
+        LatitudeSigned = iff(
+            LatitudeUnsigned >= binary_shift_left(1, 26),
+            LatitudeUnsigned - binary_shift_left(1, 27),
+            LatitudeUnsigned
+        ),
+        RateOfTurnSigned = iff(
+            RateOfTurnUnsigned >= 128,
+            RateOfTurnUnsigned - 256,
+            RateOfTurnUnsigned
+        )
+    | extend
+        Longitude = iff(
+            LongitudeUnsigned == 108600000,
+            real(null),
+            todouble(LongitudeSigned) / 600000.0
+        ),
+        Latitude = iff(
+            LatitudeUnsigned == 54600000,
+            real(null),
+            todouble(LatitudeSigned) / 600000.0
+        ),
+        SpeedOverGroundKnots = iff(
+            SpeedOverGroundRaw == 1023,
+            real(null),
+            todouble(SpeedOverGroundRaw) / 10.0
+        ),
+        CourseOverGroundDegrees = iff(
+            CourseOverGroundRaw == 3600,
+            real(null),
+            todouble(CourseOverGroundRaw) / 10.0
+        ),
+        TrueHeadingDegrees = iff(
+            TrueHeadingRaw == 511,
+            long(null),
+            TrueHeadingRaw
+        ),
+        UTCSecond = iff(
+            UTCSecondRaw >= 60,
+            long(null),
+            UTCSecondRaw
+        ),
+        PositionAccuracy = PositionAccuracyRaw == 1,
+        RAIM = RAIMRaw == 1,
+        RateOfTurnRaw = RateOfTurnSigned
+    | extend IsValidPosition =
+        isnotnull(Latitude)
+        and isnotnull(Longitude)
+        and Latitude between (-90.0 .. 90.0)
+        and Longitude between (-180.0 .. 180.0)
+    | project
+        ReceivedTime,
+        MessageType = DecodedMessageType,
+        RepeatIndicator,
+        MMSI,
+        NavigationStatus,
+        RateOfTurnRaw,
+        SpeedOverGroundKnots,
+        PositionAccuracy,
+        Longitude,
+        Latitude,
+        CourseOverGroundDegrees,
+        TrueHeadingDegrees,
+        UTCSecond,
+        ManeuverIndicator,
+        RAIM,
+        IsValidPosition,
+        SentenceType,
+        TotalFragments,
+        FragmentNumber,
+        SequenceId,
+        Channel,
+        Payload,
+        FillBits,
+        Checksum
+}
+.alter table AisNormalized policy update "[{\"IsEnabled\":true,\"Source\":\"AisRaw\",\"Query\":\"NormalizeAis()\",\"IsTransactional\":false,\"PropagateIngestionProperties\":false,\"ManagedIdentity\":null}]"
+.alter table AisPositionReports policy update "[{\"IsEnabled\":true,\"Source\":\"AisNormalized\",\"Query\":\"RouteAisPositionReports()\",\"IsTransactional\":true,\"PropagateIngestionProperties\":false,\"ManagedIdentity\":null}]"
+.alter table AisStaticReports policy update "[{\"IsEnabled\":true,\"Source\":\"AisNormalized\",\"Query\":\"RouteAisStaticReports()\",\"IsTransactional\":false,\"PropagateIngestionProperties\":false,\"ManagedIdentity\":null}]"
+.alter table AisInfrastructureReports policy update "[{\"IsEnabled\":true,\"Source\":\"AisNormalized\",\"Query\":\"RouteAisInfrastructureReports()\",\"IsTransactional\":false,\"PropagateIngestionProperties\":false,\"ManagedIdentity\":null}]"
+.alter table AisBinaryMessages policy update "[{\"IsEnabled\":true,\"Source\":\"AisNormalized\",\"Query\":\"RouteAisBinaryMessages()\",\"IsTransactional\":false,\"PropagateIngestionProperties\":false,\"ManagedIdentity\":null}]"
+.alter table AisSafetyMessages policy update "[{\"IsEnabled\":true,\"Source\":\"AisNormalized\",\"Query\":\"RouteAisSafetyMessages()\",\"IsTransactional\":false,\"PropagateIngestionProperties\":false,\"ManagedIdentity\":null}]"
+.alter table AisControlMessages policy update "[{\"IsEnabled\":true,\"Source\":\"AisNormalized\",\"Query\":\"RouteAisControlMessages()\",\"IsTransactional\":false,\"PropagateIngestionProperties\":false,\"ManagedIdentity\":null}]"
+.alter table AisDecodedClassAPosition policy update "[{\"IsEnabled\":true,\"Source\":\"AisPositionReports\",\"Query\":\"DecodeAisClassAPosition()\",\"IsTransactional\":false,\"PropagateIngestionProperties\":false,\"ManagedIdentity\":null}]"
+.alter table AisDeadLetter policy update "[{\"IsEnabled\":true,\"Source\":\"AisRaw\",\"Query\":\"RouteAisDeadLetter()\",\"IsTransactional\":false,\"PropagateIngestionProperties\":false,\"ManagedIdentity\":null}]"

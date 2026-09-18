@@ -1,0 +1,5 @@
+blank_issues_enabled: true
+contact_links:
+  - name: Microsoft Fabric documentation
+    url: https://learn.microsoft.com/fabric/
+    about: Use official documentation for Microsoft Fabric product questions.
