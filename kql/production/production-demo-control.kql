@@ -35,11 +35,9 @@
 .execute database script <|
 // Clear bronze table
 .clear table AisRaw data;
-
 // Clear silver tables
 .clear table AisNormalized data ;
 .clear table AisDeadLetter data;
-
 // Clear gold tables
 .clear table AisPositionReports data;
 .clear table AisStaticReports data;
